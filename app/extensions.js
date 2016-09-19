@@ -9,6 +9,8 @@ const settings = require('../js/constants/settings')
 const {passwordManagers, extensionIds} = require('../js/constants/passwordManagers')
 const appStore = require('../js/stores/appStore')
 const extensionState = require('./common/state/extensionState')
+const fs = require('fs')
+const path = require('path')
 
 let generateBraveManifest = () => {
   let baseManifest = {
@@ -145,35 +147,35 @@ module.exports.init = () => {
   const registeredExtensions = {}
   browserActions.init()
 
-  const defaultSession = require('electron').session.defaultSession
-  defaultSession.updateClient.on('component-checking-for-updates', () => {
+  const {componentUpdater} = require('electron')
+  componentUpdater.on('component-checking-for-updates', () => {
     // console.log('checking for update')
   })
-  defaultSession.updateClient.on('component-update-found', () => {
+  componentUpdater.on('component-update-found', () => {
     // console.log('update-found')
   })
-  defaultSession.updateClient.on('component-update-ready', () => {
+  componentUpdater.on('component-update-ready', () => {
     // console.log('update-ready')
   })
-  defaultSession.updateClient.on('component-update-updated', (e, extensionId, version) => {
+  componentUpdater.on('component-update-updated', (e, extensionId, version) => {
     // console.log('update-updated', extensionId, version)
   })
-  defaultSession.updateClient.on('component-ready', (e, extensionId, extensionPath) => {
+  componentUpdater.on('component-ready', (e, extensionId, extensionPath) => {
     // console.log('component-ready', extensionId, extensionPath)
     // Re-setup the installedExtensions info if it exists
     delete installedExtensions[extensionId]
     installExtension(extensionId, extensionPath)
   })
-  defaultSession.updateClient.on('component-not-updated', () => {
+  componentUpdater.on('component-not-updated', () => {
     // console.log('update-not-updated')
   })
-  defaultSession.updateClient.on('component-registered', (e, extensionId) => {
+  componentUpdater.on('component-registered', (e, extensionId) => {
     // console.log('component-registered')
     const extensions = extensionState.getExtensions(appStore.getState())
     const extensionPath = extensions.getIn([extensionId, 'filePath'])
     // If we don't have info on the extension yet, check for an update / install
     if (!extensionPath) {
-      defaultSession.updateClient.install(extensionId)
+      componentUpdater.checkNow(extensionId)
     } else {
       installExtension(extensionId, extensionPath)
     }
@@ -192,9 +194,24 @@ module.exports.init = () => {
     enableExtension(installInfo.id)
   }
 
-  let installExtension = (extensionId, path, options = {}) => {
+  let installExtension = (extensionId, extensionPath, options = {}) => {
     if (!installedExtensions[extensionId]) {
-      process.emit('load-extension', path, options, extensionInstalled)
+      if (extensionId === config.braveExtensionId) {
+        process.emit('load-extension', extensionPath, options, extensionInstalled)
+        return
+      }
+      // Verify we don't have info about an extension which doesn't exist
+      // on disk anymore.  It will crash if it doesn't exist, so this is
+      // just a safety net.
+      fs.exists(path.join(extensionPath, 'manifest.json'), (exists) => {
+        console.log('paht exists', extensionPath, exists)
+        if (exists) {
+          process.emit('load-extension', extensionPath, options, extensionInstalled)
+        } else {
+          delete installedExtensions[extensionId]
+          componentUpdater.checkNow(extensionId)
+        }
+      })
     } else {
       enableExtension(extensionId)
     }
@@ -219,7 +236,7 @@ module.exports.init = () => {
   let registerExtension = (extensionId) => {
     const extensions = extensionState.getExtensions(appStore.getState())
     if (!registeredExtensions[extensionId]) {
-      defaultSession.updateClient.registerComponent(extensionId)
+      componentUpdater.registerComponent(extensionId)
       registeredExtensions[extensionId] = true
     } else {
       const extensionPath = extensions.getIn([extensionId, 'filePath'])
