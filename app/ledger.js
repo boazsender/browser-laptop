@@ -41,6 +41,7 @@ const underscore = require('underscore')
 const uuid = require('node-uuid')
 
 const appActions = require('../js/actions/appActions')
+const appConfig = require('../js/constants/appConfig')
 const appConstants = require('../js/constants/appConstants')
 const appDispatcher = require('../js/dispatcher/appDispatcher')
 const messages = require('../js/constants/messages')
@@ -99,9 +100,9 @@ const msecs = { year: 365 * 24 * 60 * 60 * 1000,
 
 let addFundsMessage
 let reconciliationMessage
+let notificationTryPaymentsMessage
 let suppressNotifications = false
 let reconciliationNotificationShown = false
-let notificationTimeout = null
 
 // TODO(bridiver) - create a better way to get setting changes
 const doAction = (action) => {
@@ -249,6 +250,13 @@ if (ipc) {
       // If > 24 hours has passed, it might be time to show the reconciliation
       // message again
       setTimeout(() => { reconciliationNotificationShown = false }, 1 * msecs.day)
+    } else if (message === notificationTryPaymentsMessage) {
+      appActions.hideMessageBox(message)
+      if (buttonIndex === 1 && win) {
+        win.webContents.send(messages.SHORTCUT_NEW_FRAME,
+          'about:preferences#payments', { singleFrame: true })
+      }
+      appActions.changeSetting(settings.PAYMENTS_NOTIFICATION_TRY_PAYMENTS_DISMISSED, true)
     }
   })
 
@@ -380,6 +388,9 @@ eventStore.addChangeListener(() => {
 var initialize = (onoff) => {
   enable(onoff)
 
+  // Check if relevant browser notifications should be shown every 15 minutes
+  setInterval(showNotifications, 15 * msecs.minute)
+
   if (!onoff) {
     client = null
     return appActions.updateLedgerInfo({})
@@ -427,12 +438,12 @@ var initialize = (onoff) => {
 }
 
 var enable = (onoff) => {
+  if (onoff && !getSetting(settings.PAYMENTS_NOTIFICATION_TRY_PAYMENTS_DISMISSED)) {
+    appActions.changeSetting(settings.PAYMENTS_NOTIFICATION_TRY_PAYMENTS_DISMISSED, true)
+  }
+
   if (!onoff) {
     synopsis = null
-    if (notificationTimeout) {
-      clearInterval(notificationTimeout)
-      notificationTimeout = null
-    }
     return updatePublisherInfo()
   }
 
@@ -471,9 +482,6 @@ var enable = (onoff) => {
       if (synopsis.publishers[publisher].faviconURL === null) delete synopsis.publishers[publisher].faviconURL
     })
     updatePublisherInfo()
-
-    // Check if relevant browser notifications should be shown every 15 minutes
-    notificationTimeout = setInterval(showNotifications, 15 * msecs.minute)
 
     fs.readFile(pathName(publisherPath), (err, data) => {
       if (err) {
@@ -1268,17 +1276,46 @@ var pathName = (name) => {
  * UI controller functionality
  */
 
-/**
- * Show message that it's time to add funds if reconciliation is less than
- * a day in the future and balance is too low.
- * 24 hours prior to reconciliation, show message asking user to review
- * their votes.
- */
 const showNotifications = () => {
-  if (!getSetting(settings.PAYMENTS_ENABLED) ||
-      !getSetting(settings.PAYMENTS_NOTIFICATIONS) || suppressNotifications) {
-    return
+  if (getSetting(settings.PAYMENTS_ENABLED) &&
+      getSetting(settings.PAYMENTS_NOTIFICATIONS) &&
+      !suppressNotifications) {
+    showEnabledNotifications()
+  } else if (!getSetting(settings.PAYMENTS_ENABLED)) {
+    showDisabledNotifications()
   }
+}
+
+// When Payments is disabled
+const showDisabledNotifications = () => {
+  if (!getSetting(settings.PAYMENTS_NOTIFICATION_TRY_PAYMENTS_DISMISSED)) {
+    const firstRunTimestamp = appStore.getState().get('firstRunTimestamp')
+    if (new Date().getTime() - firstRunTimestamp < appConfig.payments.delayNotificationTryPayments) {
+      return
+    }
+    notificationTryPaymentsMessage = locale.translation('notificationTryPayments')
+    appActions.showMessageBox({
+      greeting: locale.translation('updateHello'),
+      message: notificationTryPaymentsMessage,
+      buttons: [
+        {text: locale.translation('noThanks')},
+        {text: locale.translation('notificationTryPaymentsYes'), className: 'primary'}
+      ],
+      options: {
+        style: 'greetingStyle',
+        persist: false
+      }
+    })
+  }
+}
+
+/**
+* Show message that it's time to add funds if reconciliation is less than
+* a day in the future and balance is too low.
+* 24 hours prior to reconciliation, show message asking user to review
+* their votes.
+*/
+const showEnabledNotifications = () => {
   const reconcileStamp = ledgerInfo.reconcileStamp
   const balance = Number(ledgerInfo.balance || 0)
   const unconfirmed = Number(ledgerInfo.unconfirmed || 0)
